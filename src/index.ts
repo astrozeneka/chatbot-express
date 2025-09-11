@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express';
 import 'dotenv/config';
 import OpenAI from 'openai';
-import mysql from 'mysql2/promise';
+import { Conversation, Msg } from './models';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -9,13 +9,6 @@ const port = process.env.PORT || 3000;
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
-
-const dbConfig = {
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'chatbot_db',
-};
 
 app.use(express.json());
 
@@ -35,13 +28,15 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         let currentConversationId = conversationId;
         
         if (!conversationId) {
-            const connection = await mysql.createConnection(dbConfig);
-            const [result] = await connection.execute(
-                'INSERT INTO conversations (created_at) VALUES (NOW())'
-            ) as any;
-            currentConversationId = result.insertId;
-            await connection.end();
+            const conversation = await Conversation.create();
+            currentConversationId = conversation.id!;
         }
+
+        await Msg.create({
+            conversation_id: currentConversationId,
+            content: message,
+            sender_type: 'user'
+        });
 
         const completion = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
@@ -49,6 +44,13 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         });
 
         const reply = completion.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";
+        
+        await Msg.create({
+            conversation_id: currentConversationId,
+            content: reply,
+            sender_type: 'bot'
+        });
+
         res.json({ reply, conversationId: currentConversationId });
     } catch (error) {
         console.error('OpenAI API error:', error);
