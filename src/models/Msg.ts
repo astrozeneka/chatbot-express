@@ -32,7 +32,7 @@ export class Msg {
     const result = await executeQuery<any>(
       `INSERT INTO msgs (conversation_id, content, summary, sender_type, created_at, updated_at) 
        VALUES (?, ?, ?, ?, NOW(), NOW())`,
-      [this.conversation_id, this.content, this.summary, this.sender_type]
+      [this.conversation_id, this.content ?? null, this.summary ?? null, this.sender_type]
     );
     
     this.id = result.insertId;
@@ -46,7 +46,7 @@ export class Msg {
     await executeQuery(
       `UPDATE msgs SET content = ?, summary = ?, sender_type = ?, updated_at = NOW() 
        WHERE id = ?`,
-      [this.content, this.summary, this.sender_type, this.id]
+      [this.content ?? null, this.summary ?? null, this.sender_type, this.id]
     );
     
     this.updated_at = new Date();

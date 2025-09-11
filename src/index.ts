@@ -12,6 +12,18 @@ const openai = new OpenAI({
 
 app.use(express.json());
 
+// Simple web content fetcher
+async function fetchWebContent(url: string): Promise<string> {
+    try {
+        const response = await fetch(url);
+        const text = await response.text();
+        return text.substring(0, 1000); // Limit to 1000 chars
+    } catch (error) {
+        console.error('Failed to fetch web content:', error);
+        return '';
+    }
+}
+
 app.get('/', (req: Request, res: Response) => {
   res.send('Hello, TypeScript + Express!');
 });
@@ -38,9 +50,44 @@ app.post('/api/chat', async (req: Request, res: Response) => {
             sender_type: 'user'
         });
 
+        // AI-powered resource selection
+        const webSources = {
+            'web-home': 'https://www.codecrane.me',
+            'web-development-docs': 'https://www.codecrane.me/devweb',
+            'mobile-development-docs': 'https://www.codecrane.me/devmobile'
+        };
+        
+        const resourceDecision = await openai.chat.completions.create({
+            model: "gpt-3.5-turbo",
+            messages: [{
+                role: "user",
+                content: `Analyze this user question: "${message}"
+                
+Available resources:
+- web-home: General website info
+- web-development-docs: Web development documentation  
+- mobile-development-docs: Mobile development documentation
+
+Respond with only the resource name needed (or "none" if no resource is needed):`
+            }],
+            max_tokens: 50
+        });
+        console.log("==>", resourceDecision.choices[0]?.message?.content);
+        const selectedResource = resourceDecision.choices[0]?.message?.content?.trim();
+        let additionalContext = '';
+        
+        if (selectedResource && selectedResource !== 'none' && webSources[selectedResource as keyof typeof webSources]) {
+            additionalContext = await fetchWebContent(webSources[selectedResource as keyof typeof webSources]);
+        }
+        
+        // Combine user message with context
+        const finalMessage = additionalContext 
+            ? `Context: ${additionalContext}\n\nUser question: ${message}`
+            : message;
+
         const completion = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
-            messages: [{ role: "user", content: message }],
+            messages: [{ role: "user", content: finalMessage }],
         });
 
         const reply = completion.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";

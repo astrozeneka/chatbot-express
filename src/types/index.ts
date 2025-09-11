@@ -1,4 +1,4 @@
-export type SenderType = 'user' | 'bot' | 'system';
+export type SenderType = 'user' | 'bot' | 'bot-reasoning' | 'system';
 
 export interface ConversationData {
   id?: number;
