@@ -11,7 +11,10 @@ app.get('/', (req: Request, res: Response) => {
 
 // Send a message to the chatbot and receive AI response
 app.post('/api/chat', (req: Request, res: Response) => {
-  
+    // get message from request body
+    const { message } = req.body;
+    // respond with a simple echo message
+    res.json({ reply: `You said: ${message}` });
 });
 
 // Create a new chat session for user
