@@ -96,7 +96,6 @@ Respond with only the resource name needed (or "none" if no resource is needed):
             }],
             max_tokens: 50
         });
-        console.log("==>", resourceDecision.choices[0]?.message?.content);
         // Add a reasoning step to the conversation
         const reasoningContent = "Il faut peut-être chercher dans les ressources suivant(e)s: " + (resourceDecision.choices[0]?.message?.content || 'none');
         console.log('Sender type:', 'bot-reasoning', 'Length:', 'bot-reasoning'.length);
@@ -123,6 +122,13 @@ Respond with only the resource name needed (or "none" if no resource is needed):
         
         // Get conversation history from database
         const conversationHistory = await Msg.findByConversationId(currentConversationId);
+
+        // Add a system instruction message
+        conversationHistory.unshift(new Msg({
+            conversation_id: currentConversationId,
+            content: `Tu es un assistant IA aimable et serviable pour répondre aux questions des utilisateurs. Évite de répondre par des réponses vagues comme les IA mal entraînées sur le web. Répond efficacement et précisément, n'épuise pas inutilement les jetons.`,
+            sender_type: 'system'
+        }));
 
         // Build OpenAI messages array
         const messages = conversationHistory
