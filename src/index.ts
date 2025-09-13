@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
 import 'dotenv/config';
+import cors from 'cors';
 import OpenAI from 'openai';
 import { Conversation, Msg } from './models';
 import { JSDOM } from 'jsdom';
@@ -13,9 +14,14 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// HTML content fetcher with text extraction
+/**
+ * @deprecated This is not used in this version since a prepended context is more efficient than RAG on small context. This feature will be maintained in future versions and variants.
+ * @param url 
+ * @returns 
+ */
 async function fetchWebContent(url: string): Promise<string> {
     try {
         const response = await fetch(url);
@@ -50,46 +56,42 @@ async function fetchWebContent(url: string): Promise<string> {
     }
 }
 
-async function responseTurn(conversationId: any, userMessage: string, depth: number = 0) {
-    if (depth > 3) {
-        return "I'm having trouble accessing the requested resource. Please try rephrasing your question.";
-    }
-    // Get conversation history from database
+async function getSystemPrependedMessage(): Promise<Array<Msg>> {
+    const websiteContext = fs.readFileSync(path.join(__dirname, 'data', 'context-summary.txt'), 'utf-8');
+    const preprompt = fs.readFileSync(path.join(__dirname, 'data', 'preprompt.txt'), 'utf-8');
+    const systemMessages = [
+        new Msg({
+            conversation_id: -1,
+            content: `Voici quelques informations sur l'entreprise pour t'aider à répondre aux questions des utilisateurs :\n\n ${websiteContext}`,
+            sender_type: 'system'
+        }),
+        new Msg({
+            conversation_id: -1,
+            content: preprompt,
+            sender_type: 'system'
+        })
+    ]
+    return systemMessages;
+}
+
+async function responseTurn(conversationId: any, userMessage: string) {
     const conversationHistory = await Msg.findByConversationId(conversationId);
-    // Create and append the user message
+
+    // Prepare the user messages
     const userMessageObj = new Msg({
         conversation_id: conversationId,
         content: userMessage,
         sender_type: 'user'
     });
-    // Persist the user message
+
+    // Persist and push the user message
     await userMessageObj.save();
-    // Add the user message to the history
     conversationHistory.push(userMessageObj);
-    // The resource data
-    const webSources = {
-        'web-home': 'https://www.codecrane.me',
-        'web-development-docs': 'https://www.codecrane.me/devweb',
-        'mobile-development-docs': 'https://www.codecrane.me/devmobile',
-        'faq': 'https://www.codecrane.me/faq'
-    };
-    // Append a system instruction message
-    const systemMessage = new Msg({
-        conversation_id: conversationId,
-        content: `Tu es un assistant IA aimable et serviable pour répondre aux questions des utilisateurs qui travail pour le compte d'un agence de développement informatique. Évite de répondre par des réponses vagues comme les IA mal entraînées sur le web. Répond efficacement et précisément, n'épuise pas inutilement les jetons. Évite d'être trop verbeux et trop joyeux. Il est imporant que tu fournit des informations correctes et vérifiées (parmi les resources fournies). Si tu n'as pas la réponse, dis le simplement. Ne tente pas d'inventer des réponses. Sois pertinent, si l'utilisateur demande un numéro de téléphone, fournis le lui, s'il demande une adresse, fournis le lui (si l'information existe dans les ressources), s'il demande une information précise, fournis la lui, etc. Ne tourne pas autour du pot. `,
-        sender_type: 'system'
-    });
-    conversationHistory.unshift(systemMessage);
-    conversationHistory.push(new Msg({
-        conversation_id: conversationId,
-        content: `Analyse le message précédent et prends en compte l'historique de discussion pour formuler une réponse pertinente et utile. Garde en tête que l'utilisateur est un potentiel intéressé par nos services informatiques. Il est important de fournir des arguments convaincants. Ne sois pas trop verbeux.
-N'invente pas des informations, si la réponse nécessite des informations spécifiques, alors réponds exactement "[fetch]resource_name" où resource_name est le nom de la ressource parmi les suivantes:
-- web-home: General website info
-- web-development-docs: Web development documentation  
-- mobile-development-docs: Mobile development documentation
-- faq: FAQ`,
-        sender_type: 'system'
-    }));
+
+    // Prepend the system message
+    const systemMessages = await getSystemPrependedMessage();
+    conversationHistory.unshift(...systemMessages);
+
     // Build OpenAI messages array
     const messages = conversationHistory
         .filter(msg => msg.content && msg.content.trim() !== '')
@@ -103,41 +105,27 @@ N'invente pas des informations, si la réponse nécessite des informations spéc
             }
             return { role: "assistant" as const, content: msg.content! };
         });
+
     console.log("================")
     console.log(messages);
     console.log("================")
     const completion = await openai.chat.completions.create({
-        // model: "gpt-3.5-turbo",
+        model: "gpt-3.5-turbo",
         // model: "gpt-4.1-nano",
-        model: "gpt-5-mini",
+        // model: "gpt-5-mini",
         messages: messages,
     });
+
     let reply = completion.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";
-    // Check if the reply contains a fetch command
-    const fetchMatch = reply.match(/\[fetch\]([a-zA-Z0-9_-]+)/);
-    if (fetchMatch) {
-        console.log("Fetch command detected:", fetchMatch[1]);
-        const resourceName = fetchMatch[1];
-        if (webSources[resourceName as keyof typeof webSources]) {
-            const additionalContext = await fetchWebContent(webSources[resourceName as keyof typeof webSources]);
-            console.log("Fetched context from:", webSources[resourceName as keyof typeof webSources]);
-            // Add a system message with the fetched context
-            await Msg.create({
-                conversation_id: conversationId,
-                content: `Fetching context from ${resourceName}: ${additionalContext}`,
-                sender_type: 'system'
-            });
-            // Recurse to generate a new response with the additional context
-            return await responseTurn(conversationId, userMessage, depth + 1);
-        }
-    }
     // Save the assistant's reply to the database
-    await Msg.create({
+    const replyObj = await Msg.create({
         conversation_id: conversationId,
         content: reply,
         sender_type: 'bot'
     });
-    return reply;
+    replyObj.save();
+
+    return replyObj;
 }
 
 app.get('/', (req: Request, res: Response) => {
@@ -147,7 +135,7 @@ app.get('/', (req: Request, res: Response) => {
 // Send a message to the chatbot and receive AI response
 app.post('/api/chat', async (req: Request, res: Response) => {
     try {
-        const { message, conversationId } = req.body;
+        const { content: message, conversation_id: conversationId } = req.body;
         
         if (!message) {
             return res.status(400).json({ error: 'Message is required' });
