@@ -3,6 +3,8 @@ import 'dotenv/config';
 import OpenAI from 'openai';
 import { Conversation, Msg } from './models';
 import { JSDOM } from 'jsdom';
+import fs from 'fs';
+import path from 'path';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -48,6 +50,96 @@ async function fetchWebContent(url: string): Promise<string> {
     }
 }
 
+async function responseTurn(conversationId: any, userMessage: string, depth: number = 0) {
+    if (depth > 3) {
+        return "I'm having trouble accessing the requested resource. Please try rephrasing your question.";
+    }
+    // Get conversation history from database
+    const conversationHistory = await Msg.findByConversationId(conversationId);
+    // Create and append the user message
+    const userMessageObj = new Msg({
+        conversation_id: conversationId,
+        content: userMessage,
+        sender_type: 'user'
+    });
+    // Persist the user message
+    await userMessageObj.save();
+    // Add the user message to the history
+    conversationHistory.push(userMessageObj);
+    // The resource data
+    const webSources = {
+        'web-home': 'https://www.codecrane.me',
+        'web-development-docs': 'https://www.codecrane.me/devweb',
+        'mobile-development-docs': 'https://www.codecrane.me/devmobile',
+        'faq': 'https://www.codecrane.me/faq'
+    };
+    // Append a system instruction message
+    const systemMessage = new Msg({
+        conversation_id: conversationId,
+        content: `Tu es un assistant IA aimable et serviable pour répondre aux questions des utilisateurs qui travail pour le compte d'un agence de développement informatique. Évite de répondre par des réponses vagues comme les IA mal entraînées sur le web. Répond efficacement et précisément, n'épuise pas inutilement les jetons. Évite d'être trop verbeux et trop joyeux. Il est imporant que tu fournit des informations correctes et vérifiées (parmi les resources fournies). Si tu n'as pas la réponse, dis le simplement. Ne tente pas d'inventer des réponses. Sois pertinent, si l'utilisateur demande un numéro de téléphone, fournis le lui, s'il demande une adresse, fournis le lui (si l'information existe dans les ressources), s'il demande une information précise, fournis la lui, etc. Ne tourne pas autour du pot. `,
+        sender_type: 'system'
+    });
+    conversationHistory.unshift(systemMessage);
+    conversationHistory.push(new Msg({
+        conversation_id: conversationId,
+        content: `Analyse le message précédent et prends en compte l'historique de discussion pour formuler une réponse pertinente et utile. Garde en tête que l'utilisateur est un potentiel intéressé par nos services informatiques. Il est important de fournir des arguments convaincants. Ne sois pas trop verbeux.
+N'invente pas des informations, si la réponse nécessite des informations spécifiques, alors réponds exactement "[fetch]resource_name" où resource_name est le nom de la ressource parmi les suivantes:
+- web-home: General website info
+- web-development-docs: Web development documentation  
+- mobile-development-docs: Mobile development documentation
+- faq: FAQ`,
+        sender_type: 'system'
+    }));
+    // Build OpenAI messages array
+    const messages = conversationHistory
+        .filter(msg => msg.content && msg.content.trim() !== '')
+        .map(msg => {
+            if (msg.sender_type === 'user') {
+                return { role: "user" as const, content: msg.content! };
+            } else if (msg.sender_type === 'bot') {
+                return { role: "assistant" as const, content: msg.content! };
+            } else if (msg.sender_type === 'system') {
+                return { role: "system" as const, content: msg.content! };
+            }
+            return { role: "assistant" as const, content: msg.content! };
+        });
+    console.log("================")
+    console.log(messages);
+    console.log("================")
+    const completion = await openai.chat.completions.create({
+        // model: "gpt-3.5-turbo",
+        // model: "gpt-4.1-nano",
+        model: "gpt-5-mini",
+        messages: messages,
+    });
+    let reply = completion.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";
+    // Check if the reply contains a fetch command
+    const fetchMatch = reply.match(/\[fetch\]([a-zA-Z0-9_-]+)/);
+    if (fetchMatch) {
+        console.log("Fetch command detected:", fetchMatch[1]);
+        const resourceName = fetchMatch[1];
+        if (webSources[resourceName as keyof typeof webSources]) {
+            const additionalContext = await fetchWebContent(webSources[resourceName as keyof typeof webSources]);
+            console.log("Fetched context from:", webSources[resourceName as keyof typeof webSources]);
+            // Add a system message with the fetched context
+            await Msg.create({
+                conversation_id: conversationId,
+                content: `Fetching context from ${resourceName}: ${additionalContext}`,
+                sender_type: 'system'
+            });
+            // Recurse to generate a new response with the additional context
+            return await responseTurn(conversationId, userMessage, depth + 1);
+        }
+    }
+    // Save the assistant's reply to the database
+    await Msg.create({
+        conversation_id: conversationId,
+        content: reply,
+        sender_type: 'bot'
+    });
+    return reply;
+}
+
 app.get('/', (req: Request, res: Response) => {
   res.send('Hello, TypeScript + Express!');
 });
@@ -61,6 +153,11 @@ app.post('/api/chat', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Message is required' });
         }
 
+        // Read context file for additional context (uncomment and use as needed)
+        // const contextPath = path.join(__dirname, 'data', 'context-summary.txt');
+        // const contextContent = fs.readFileSync(contextPath, 'utf-8');
+        // console.log('Context content:', contextContent);
+
         let currentConversationId = conversationId;
         
         if (!conversationId) {
@@ -68,97 +165,8 @@ app.post('/api/chat', async (req: Request, res: Response) => {
             currentConversationId = conversation.id!;
         }
 
-        await Msg.create({
-            conversation_id: currentConversationId,
-            content: message,
-            sender_type: 'user'
-        });
-
-        // AI-powered resource selection
-        const webSources = {
-            'web-home': 'https://www.codecrane.me',
-            'web-development-docs': 'https://www.codecrane.me/devweb',
-            'mobile-development-docs': 'https://www.codecrane.me/devmobile'
-        };
-        
-        const resourceDecision = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
-            messages: [{
-                role: "user",
-                content: `Analyze this user question: "${message}"
-                
-Available resources:
-- web-home: General website info
-- web-development-docs: Web development documentation  
-- mobile-development-docs: Mobile development documentation
-
-Respond with only the resource name needed (or "none" if no resource is needed):`
-            }],
-            max_tokens: 50
-        });
-        // Add a reasoning step to the conversation
-        const reasoningContent = "Il faut peut-être chercher dans les ressources suivant(e)s: " + (resourceDecision.choices[0]?.message?.content || 'none');
-        console.log('Sender type:', 'bot-reasoning', 'Length:', 'bot-reasoning'.length);
-        console.log('Content length:', reasoningContent.length);
-        
-        await Msg.create({
-            conversation_id: currentConversationId,
-            content: reasoningContent,
-            sender_type: 'bot-reasoning'
-        });
-        const selectedResource = resourceDecision.choices[0]?.message?.content?.trim();
-        let additionalContext = '';
-        
-        if (selectedResource && selectedResource !== 'none' && webSources[selectedResource as keyof typeof webSources]) {
-            additionalContext = await fetchWebContent(webSources[selectedResource as keyof typeof webSources]);
-            console.log("Fetched context from:", webSources[selectedResource as keyof typeof webSources]);
-            // Add a system message with the fetched context
-            await Msg.create({
-                conversation_id: currentConversationId,
-                content: `Using context from ${selectedResource}: ${additionalContext}`,
-                sender_type: 'system'
-            });
-        }
-        
-        // Get conversation history from database
-        const conversationHistory = await Msg.findByConversationId(currentConversationId);
-
-        // Add a system instruction message
-        conversationHistory.unshift(new Msg({
-            conversation_id: currentConversationId,
-            content: `Tu es un assistant IA aimable et serviable pour répondre aux questions des utilisateurs. Évite de répondre par des réponses vagues comme les IA mal entraînées sur le web. Répond efficacement et précisément, n'épuise pas inutilement les jetons.`,
-            sender_type: 'system'
-        }));
-
-        // Build OpenAI messages array
-        const messages = conversationHistory
-            .filter(msg => msg.content && msg.content.trim() !== '')
-            .map(msg => {
-                if (msg.sender_type === 'user') {
-                    return { role: "user" as const, content: msg.content! };
-                } else if (msg.sender_type === 'bot' || msg.sender_type === 'bot-reasoning') {
-                    return { role: "assistant" as const, content: msg.content! };
-                } else if (msg.sender_type === 'system') {
-                    return { role: "system" as const, content: msg.content! };
-                }
-                return { role: "assistant" as const, content: msg.content! };
-            });
-
-        console.log("================")
-        console.log(messages);
-        console.log("================")
-        const completion = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
-            messages: messages,
-        });
-
-        const reply = completion.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";
-        
-        await Msg.create({
-            conversation_id: currentConversationId,
-            content: reply,
-            sender_type: 'bot'
-        });
+        // call the responseTurn function
+        const reply = await responseTurn(currentConversationId, message);
 
         res.json({ reply, conversationId: currentConversationId });
     } catch (error) {
