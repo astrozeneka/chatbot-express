@@ -132,34 +132,70 @@ app.get('/', (req: Request, res: Response) => {
   res.send('Hello, TypeScript + Express!');
 });
 
-// Send a message to the chatbot and receive AI response
+// Send a message to the chatbot and receive AI response via SSE
 app.post('/api/chat', async (req: Request, res: Response) => {
     try {
         const { content: message, conversation_id: conversationId } = req.body;
-        
+
         if (!message) {
             return res.status(400).json({ error: 'Message is required' });
         }
 
-        // Read context file for additional context (uncomment and use as needed)
-        // const contextPath = path.join(__dirname, 'data', 'context-summary.txt');
-        // const contextContent = fs.readFileSync(contextPath, 'utf-8');
-        // console.log('Context content:', contextContent);
-
         let currentConversationId = conversationId;
-        
+
         if (!conversationId) {
             const conversation = await Conversation.create();
             currentConversationId = conversation.id!;
         }
 
-        // call the responseTurn function
-        const reply = await responseTurn(currentConversationId, message);
+        // Set up Server-Sent Events headers
+        res.set({
+            'Cache-Control': 'no-cache',
+            'Content-Type': 'text/event-stream',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': 'Cache-Control'
+        });
+        res.flushHeaders();
 
-        res.json({ reply, conversationId: currentConversationId });
+        // Send immediate acknowledgment (Response 1)
+        res.write(`data: ${JSON.stringify({
+            type: 'acknowledgment',
+            status: 'processing',
+            message: 'Message received and being processed',
+            conversationId: currentConversationId
+        })}\n\n`);
+
+        try {
+            // Process the response asynchronously
+            const reply = await responseTurn(currentConversationId, message);
+
+            // Send the LLM response (Response 2)
+            res.write(`data: ${JSON.stringify({
+                type: 'response',
+                status: 'completed',
+                reply: reply,
+                conversationId: currentConversationId
+            })}\n\n`);
+
+        } catch (error) {
+            console.error('OpenAI API error:', error);
+            // Send error response
+            res.write(`data: ${JSON.stringify({
+                type: 'error',
+                status: 'error',
+                error: 'Failed to get AI response'
+            })}\n\n`);
+        }
+
+        // Close the SSE connection
+        res.end();
+
     } catch (error) {
-        console.error('OpenAI API error:', error);
-        res.status(500).json({ error: 'Failed to get AI response' });
+        console.error('Request processing error:', error);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Failed to process request' });
+        }
     }
 });
 
