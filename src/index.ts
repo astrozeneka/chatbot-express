@@ -199,6 +199,36 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     }
 });
 
+app.get('/api/chat/conversations/:id', async (req: Request, res: Response) => {
+    try {
+        const conversationId = parseInt(req.params.id, 10);
+
+        if (isNaN(conversationId)) {
+            return res.status(400).json({ error: 'Invalid conversation ID' });
+        }
+
+        const messages = await Msg.findByConversationId(conversationId);
+
+        const filteredMessages = messages
+            .filter(msg => msg.sender_type === 'user' || msg.sender_type === 'bot')
+            .map(msg => ({
+                id: msg.id,
+                content: msg.content,
+                sender_type: msg.sender_type,
+                created_at: msg.created_at
+            }));
+
+        res.json({
+            conversation_id: conversationId,
+            messages: filteredMessages
+        });
+
+    } catch (error) {
+        console.error('Error retrieving conversation messages:', error);
+        res.status(500).json({ error: 'Failed to retrieve conversation messages' });
+    }
+});
+
 // Create a new chat session for user
 app.post('/api/chat/sessions', (req: Request, res: Response) => {
   
