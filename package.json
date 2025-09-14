@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node dist/index.js",
     "build": "tsc",
-    "dev": "nodemon src/index.ts"
+    "dev": "nodemon src/index.ts",
+    "upload-prompts": "ssh ec2-user@codecrane.me 'mkdir -p /home/ec2-user/chatbot-express/src/data && exit' && scp src/data/*.txt ec2-user@codecrane.me:/home/ec2-user/chatbot-express/src/data/"
   },
   "keywords": [],
   "author": "",

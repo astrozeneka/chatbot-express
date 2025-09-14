@@ -110,8 +110,8 @@ async function responseTurn(conversationId: any, userMessage: string) {
     console.log(messages);
     console.log("================")
     const completion = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        // model: "gpt-4.1-nano",
+        // model: "gpt-3.5-turbo",
+        model: "gpt-4.1-nano",
         // model: "gpt-5-mini",
         messages: messages,
     });
