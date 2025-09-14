@@ -132,6 +132,25 @@ app.get('/', (req: Request, res: Response) => {
   res.send('Hello, TypeScript + Express!');
 });
 
+app.post('/api/chat/new-conversation', async (req: Request, res: Response) => {
+    try {
+        const conversation = await Conversation.create();
+
+        res.json({
+            conversation_id: conversation.id,
+            messages: [{
+                id: null,
+                content: "Bonjour! comment puis-je vous aider ?",
+                sender_type: "bot",
+                created_at: new Date().toISOString()
+            }]
+        });
+    } catch (error) {
+        console.error('Error creating new conversation:', error);
+        res.status(500).json({ error: 'Failed to create new conversation' });
+    }
+});
+
 // Send a message to the chatbot and receive AI response via SSE
 app.post('/api/chat', async (req: Request, res: Response) => {
     try {
@@ -141,12 +160,11 @@ app.post('/api/chat', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Message is required' });
         }
 
-        let currentConversationId = conversationId;
-
         if (!conversationId) {
-            const conversation = await Conversation.create();
-            currentConversationId = conversation.id!;
+            return res.status(400).json({ error: 'Conversation ID is required' });
         }
+
+        const currentConversationId = conversationId;
 
         // Set up Server-Sent Events headers
         res.set({
@@ -218,9 +236,17 @@ app.get('/api/chat/conversations/:id', async (req: Request, res: Response) => {
                 created_at: msg.created_at
             }));
 
+        // Prepend greeting message (not stored in database)
+        const greetingMessage = {
+            id: null,
+            content: "Bonjour! comment puis-je vous aider ?",
+            sender_type: "bot",
+            created_at: new Date().toISOString()
+        };
+
         res.json({
             conversation_id: conversationId,
-            messages: filteredMessages
+            messages: [greetingMessage, ...filteredMessages]
         });
 
     } catch (error) {
