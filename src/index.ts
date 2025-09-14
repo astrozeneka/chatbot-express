@@ -6,6 +6,9 @@ import { Conversation, Msg } from './models';
 import { JSDOM } from 'jsdom';
 import fs from 'fs';
 import path from 'path';
+import { ConversationSummaryBufferMemory } from 'langchain/memory';
+import { ChatOpenAI } from '@langchain/openai';
+import { HumanMessage, AIMessage, SystemMessage, BaseMessage } from '@langchain/core/messages';
 
 const app = express();
 const port = process.env.PORT || 3031;
@@ -128,6 +131,117 @@ async function responseTurn(conversationId: any, userMessage: string) {
     return replyObj;
 }
 
+// Map to store memory instances per conversation
+const conversationMemories = new Map<number, ConversationSummaryBufferMemory>();
+
+async function getOrCreateMemory(conversationId: number): Promise<ConversationSummaryBufferMemory> {
+    if (!conversationMemories.has(conversationId)) {
+        const llm = new ChatOpenAI({
+            openAIApiKey: process.env.OPENAI_API_KEY,
+            modelName: "gpt-3.5-turbo", // Use cheaper model for summarization
+            temperature: 0,
+        });
+
+        const memory = new ConversationSummaryBufferMemory({
+            llm: llm,
+            maxTokenLimit: 2000, // Adjust based on your needs
+            returnMessages: true,
+        });
+
+        // Load existing conversation history into memory
+        const existingMessages = await Msg.findByConversationId(conversationId);
+
+        // Convert database messages to LangChain messages and add to memory
+        for (const msg of existingMessages) {
+            if (msg.sender_type === 'user') {
+                await memory.chatHistory.addMessage(new HumanMessage(msg.content!));
+            } else if (msg.sender_type === 'bot') {
+                await memory.chatHistory.addMessage(new AIMessage(msg.content!));
+            }
+            // Skip system messages in memory as they're handled separately
+        }
+
+        conversationMemories.set(conversationId, memory);
+    }
+
+    return conversationMemories.get(conversationId)!;
+}
+
+async function responseTurnWithLangChain(conversationId: any, userMessage: string) {
+
+    // Prepare the user message
+    const userMessageObj = new Msg({
+        conversation_id: conversationId,
+        content: userMessage,
+        sender_type: 'user'
+    });
+
+    // Persist and push the user message
+    await userMessageObj.save();
+
+    // Get or create memory for this conversation
+    const memory = await getOrCreateMemory(conversationId);
+
+    // Add the new user message to memory
+    await memory.chatHistory.addMessage(new HumanMessage(userMessage));
+
+    // Get managed conversation messages from memory (auto-summarized if needed)
+    const memoryMessages = await memory.chatHistory.getMessages();
+
+    // Prepend the system messages (these should always be included)
+    const systemMessages = await getSystemPrependedMessage();
+
+    // Convert system messages to LangChain format
+    const langChainSystemMessages: BaseMessage[] = systemMessages.map(msg =>
+        new SystemMessage(msg.content!)
+    );
+
+    // Combine system messages with memory messages
+    const allMessages: BaseMessage[] = [
+        ...langChainSystemMessages,
+        ...memoryMessages
+    ];
+
+    // Convert LangChain messages to OpenAI format for the API call
+    const openAIMessages = allMessages
+        .filter(msg => msg.content && msg.content.toString().trim() !== '')
+        .map(msg => {
+            if (msg instanceof HumanMessage) {
+                return { role: "user" as const, content: msg.content.toString() };
+            } else if (msg instanceof AIMessage) {
+                return { role: "assistant" as const, content: msg.content.toString() };
+            } else if (msg instanceof SystemMessage) {
+                return { role: "system" as const, content: msg.content.toString() };
+            }
+            return { role: "assistant" as const, content: msg.content.toString() };
+        });
+
+    console.log("================ LangChain Messages ================")
+    console.log("Memory messages count:", memoryMessages.length);
+    console.log("Total messages to OpenAI:", openAIMessages.length);
+    console.log(openAIMessages);
+    console.log("=================================================")
+
+    const completion = await openai.chat.completions.create({
+        model: "gpt-4.1-nano",
+        messages: openAIMessages,
+    });
+
+    let reply = completion.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";
+
+    // Save the assistant's reply to the database
+    const replyObj = await Msg.create({
+        conversation_id: conversationId,
+        content: reply,
+        sender_type: 'bot'
+    });
+
+    // Add the assistant's reply to memory
+    await memory.chatHistory.addMessage(new AIMessage(reply));
+
+    return replyObj;
+}
+
 app.get('/', (req: Request, res: Response) => {
   res.send('Hello, TypeScript + Express!');
 });
@@ -171,6 +285,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
             'Cache-Control': 'no-cache',
             'Content-Type': 'text/event-stream',
             'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',  // Critical for nginx proxy
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Headers': 'Cache-Control'
         });
@@ -186,7 +301,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
 
         try {
             // Process the response asynchronously
-            const reply = await responseTurn(currentConversationId, message);
+            const reply = await responseTurnWithLangChain(currentConversationId, message);
 
             // Send the LLM response (Response 2)
             res.write(`data: ${JSON.stringify({
