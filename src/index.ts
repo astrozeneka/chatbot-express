@@ -300,6 +300,18 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         })}\n\n`);
 
         try {
+            // Check message limit before processing (security measure)
+            const messageCount = await Msg.countByConversationId(currentConversationId);
+            if (messageCount >= 45) {
+                res.write(`data: ${JSON.stringify({
+                    type: 'error',
+                    status: 'error',
+                    error: 'Message limit reached for this conversation. Please start a new conversation.'
+                })}\n\n`);
+                res.end();
+                return;
+            }
+
             // Process the response asynchronously
             const reply = await responseTurnWithLangChain(currentConversationId, message);
 

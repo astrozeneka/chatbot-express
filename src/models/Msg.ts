@@ -80,8 +80,17 @@ export class Msg {
       'SELECT * FROM msgs WHERE conversation_id = ? ORDER BY created_at ASC',
       [conversationId]
     );
-    
+
     return result.map(row => new Msg(row));
+  }
+
+  static async countByConversationId(conversationId: number): Promise<number> {
+    const result = await executeQuery<any[]>(
+      'SELECT COUNT(*) as count FROM msgs WHERE conversation_id = ?',
+      [conversationId]
+    );
+
+    return result[0]?.count || 0;
   }
 
   static async deleteByConversationId(conversationId: number): Promise<boolean> {
