@@ -8,7 +8,7 @@ import fs from 'fs';
 import path from 'path';
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3031;
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
